@@ -1,0 +1,182 @@
+---
+title: "Practical Machine Learning project: predicting how well users perform certain exercises"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache =TRUE, out.width='1000px', out.height ='1000px', dpi=200)
+```
+
+### Sergey Prykhozhij
+April 30th, 2017
+
+
+## Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. Research in this area also focuses on developing the ways to identify which activity people do. In some aspects, the ability to identify how well people do a certain activity may be similar to the ability to identify which activity people do. 
+
+In this project, the goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. Investigating how well someone does an activity can be useful for many applications such as sports training. In the research paper related to the project dataset, the authors investigate three aspects that pertain to qualitative activity recognition: the problem of specifying correct execution, the automatic and robust detection of execution mistakes, and how to provide feedback on the quality of execution to the user. Six young health participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. Participants were supervised by an experienced weight lifter to make sure the execution complied to the manner they were supposed to simulate. The exercises were performed by six male participants aged between 20-28 years, with little weight lifting experience. We made sure that all participants could easily simulate the mistakes in a safe and controlled manner by using a relatively light dumbbell (1.25kg).
+
+The above information is either quoted directly or paraphrased from http://groupware.les.inf.puc-rio.br/har. 
+
+## Data reading, processing and cleaning
+
+Before the data can be used for machine learning applications, it is often necessary to prepare it by performing a number of steps related to its processing, cleaning and feature selection. These steps can be very important for successful machine learning applications because they allow the learning algorithms to focus on the most relevant parts of the datasets
+
+### Loading packages and reading data
+
+All relevant packages have been loaded and the datasets have been imported. Their dimensions were output.
+
+```{r message = FALSE, warning = FALSE}
+library(corrplot)
+library(caret)
+library(rpart)
+library(randomForest)
+
+# reading the data
+training <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", header = TRUE)
+testing <- read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", header = TRUE)
+
+dim(training)
+dim(testing)
+```
+
+### Exploring data, cleaning and feature selection based on several criteria
+The simplest exploration of data is to simply output a sample of it as in the case of training dataset and the whole dataset in the case of testing data. In addition, summary function is useful to assess the overall distribution of values. Since the output is very bulky, it was not included. The conclusion was that there are many columns that are completely filled with "NA" or empty string values. These columns are unlikely to be useful for predicting the type of activity using the testing data. 
+
+```{r, eval = FALSE}
+# exploring data before cleaning
+head(training)
+head(testing)
+summary(training)
+summary(testing)
+```
+
+They were therefore removed from both datasets.
+```{r}
+colsNotNAs <- colSums(is.na(testing)) != nrow(testing)
+training <- training[, colsNotNAs]
+testing <- testing[, colsNotNAs]
+```
+
+It is obvious that the column dimension of both datasets was reduced by 100.
+```{r}
+dim(training)
+dim(testing)
+```
+
+
+
+
+
+
+
+Another possible feature selection for these datasets can be based on the knowledge about which parts of the body were exercised. From the background to the project it is known that belt, forearm, arm, and dumbell accelerometers were involved in relevant measurements
+
+```{r}
+col.names <- names(training)
+
+col.names.train <- c(col.names[grepl("belt|arm|dumbbell", col.names)], "classe")
+col.names.test <- col.names[grepl("belt|arm|dumbbell", col.names)]
+
+training <- training[, col.names.train]
+testing  <- testing[, col.names.test]
+```
+
+Now is the time to investigate the relationships between different potential predictor variables and the response "classe" variable. FeaturePlot function does not show clear trends between exercise classes and any individual variables. On the other hand, the correlation plot shows clusters of correlation between related variables suggesting that it may be possible to distinguish different classes of activities based on multiple parameters. Finally, there were no clear near-zero variables. Thus, the dataset looks ready to be used for fitting models and cross-validation.
+
+```{r}
+# trying to see if there is a clear visualizable relationship between 
+# particular valiables and the response variable
+library(caret)
+
+# classify the variables according to their scale using the maximum function
+colMaxs <- sapply(training[,-53], max)
+colsSmall <- colMaxs < 10
+colsMedium <- (colMaxs > 10 & colMaxs < 300)
+colsLarge <- colMaxs > 300
+
+trainNoClasse <- training[,-53]
+
+featurePlot(trainNoClasse[,colsSmall], training$classe, "strip", ylim =c(7, -7))
+
+featurePlot(trainNoClasse[,colsMedium], training$classe, "strip")
+
+featurePlot(trainNoClasse[,colsLarge], training$classe, "strip")
+
+# testing how much correlation there is between different varibles in the 
+# training dataset
+corrplot.mixed(cor(training[, -53]), lower="circle", upper="color", 
+               tl.pos="lt", tl.cex = 0.5, diag="n", order="hclust", hclust.method="complete")
+
+# checking for near-zero variance
+zero.var = nearZeroVar(training, saveMetrics=TRUE)
+zero.var
+```
+
+
+### Training and cross-validation of models
+
+As a first step before training and understanding models, the levels of the "classe" variable need to be converted back to their correct state.
+```{r}
+levels(training$classe) <- c("A", "B", "C", "D", "E")
+training$classe <- as.factor(training$classe)
+```
+
+In terms of cross-validation, the problem with the current training and testing datasets is that the testing dataset is really small so out-of-sample error cannot be reliably estimates. Thus we need to train our models on the bulk of the data and validate them on a significant proportion of the data.
+```{r}
+# preparing the data for cross-validation
+trainIndex <- createDataPartition(y = training$classe, p = 0.7, list = FALSE)
+trainData <- training[trainIndex, ]
+dim(trainData)
+validTestData <- training[-trainIndex,]
+dim(validTestData)
+```
+
+The first model that we are going to try is decision tree classfication model.
+```{r}
+# decision tree model
+modFit <- rpart(classe ~ ., data=trainData, method="class")
+
+# confusion matrix for the rpart prediction
+predsTrain <- predict(modFit, newdata = trainData, type = "class")
+table(predsTrain, trainData$classe)
+
+# calculating the accuracy on the training dataset
+mean(predsTrain == trainData$classe)
+
+# calculating the confusion matrix and accuracy on the validation dataset
+predsTest <- predict(modFit, newdata = validTestData, type = "class")
+table(predsTest, validTestData$classe)
+mean(predsTest == validTestData$classe)
+```
+
+The model above has some merits but since we know that decision trees are not the most accurate models. Therefore, we can test if a more advanced random forest model would perform better on this dataset. We will still use the training and validation subsets of the original training dataset.
+
+```{r}
+# setting up cross-validation parameters
+ctrl <- trainControl(method = 'cv', number = 3, verboseIter=F)
+
+# random forest model
+(randForest <- randomForest(classe~., data=trainData, ntree = 500))
+
+# predictions on the validation dataset to calculate the out-of-sample error
+predsRF = predict(randForest, validTestData)
+
+# confusion matrix and error
+table(predsRF, validTestData$classe)
+1- mean(predsRF == validTestData$classe)
+```
+The results above suggest that the random forest model performs significantly better than than the decision trees and the out-of-sample error of 0.3 % is even less the error of the model on the training data of 0.5 %. There are a few questions still left to investigate about the model we generate. For example, what is the importance of different variables?
+
+```{r}
+# Investigating the individual variable importance
+varImpPlot(randForest)
+
+```
+From this plot, it is clear that the model might have been simplified but on the other hand, the performance of the current is very good. The only downside of the current model is that it may take longer to be trained than a simpler model. However, if the model is going to be trained infrequently, the more complex model will be fine. Predictions usually occur fairly quickly. 
+
+As a final step in the project, we need to make predictions for the original testing data and submit them as answers to the project quiz.
+```{r}
+(predTesting <- predict(randForest, newdata = testing))
+```
